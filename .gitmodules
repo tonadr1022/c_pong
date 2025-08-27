@@ -1,0 +1,3 @@
+[submodule "third_party/raygui"]
+	path = third_party/raygui
+	url = git@github.com:raysan5/raygui.git

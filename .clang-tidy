@@ -1,0 +1,67 @@
+---
+Checks: >
+  -*,
+  abseil-*,
+  bugprone-*,
+  google-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -misc-non-private-member-variables-in-classes,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  -readability-braces-around-statements,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-uppercase-literal-suffix,
+  -bugprone-easily-swappable-parameters,
+  -readability-named-parameter,
+  -bugprone-narrowing-conversions,
+  -readability-implicit-bool-conversion,
+  -readability-function-cognitive-complexity,
+  -readability-convert-member-functions-to-static,
+  -google-readability-todo,
+  -readability-isolate-declaration,
+  -performance-no-int-to-ptr,
+  -bugprone-assert-side-effect,
+  -readability-avoid-nested-conditional-operator,
+  -modernize-use-designated-initializers,
+  -misc-no-recursion,
+  -google-build-using-namespace,
+  -google-readability-casting,
+  -readability-identifier-naming,
+  -misc-no-recursion,
+  -bugprone-assignment-in-if-condition
+WarningsAsErrors: "*"
+CheckOptions:
+  - { key: readability-identifier-naming.NamespaceCase, value: lower_case }
+  - { key: readability-identifier-naming.ClassCase, value: CamelCase }
+  - { key: readability-identifier-naming.StructCase, value: CamelCase }
+  - {
+      key: readability-identifier-naming.TemplateParameterCase,
+      value: CamelCase,
+    }
+  - { key: readability-identifier-naming.FunctionCase, value: lower_case }
+  - { key: readability-identifier-naming.VariableCase, value: lower_case }
+  - { key: readability-identifier-naming.ClassMemberCase, value: lower_case }
+  # - { key: readability-identifier-naming.ClassMemberSuffix, value: _ }
+  - { key: readability-identifier-naming.PrivateMemberSuffix, value: _ }
+  - { key: readability-identifier-naming.ProtectedMemberSuffix, value: _ }
+  - {
+      key: readability-identifier-naming.EnumConstantCase,
+      value: UpperCamelCase,
+    }
+  - {
+      key: readability-identifier-naming.ConstexprVariableCase,
+      value: lower_case,
+    }
+  # - { key: readability-identifier-naming.ConstexprVariablePrefix, value: k }
+  - { key: readability-identifier-naming.GlobalConstantCase, value: UPPER_CASE }
+  # - { key: readability-identifier-naming.GlobalConstantPrefix, value: k }
+  - { key: readability-identifier-naming.MemberConstantCase, value: lower_case }
+  # - { key: readability-identifier-naming.MemberConstantPrefix, value: k }
+  - { key: readability-identifier-naming.StaticConstantCase, value: UPPER_CASE }
+  # - { key: readability-identifier-naming.StaticConstantPrefix, value: k }
+  - { key: readability-function-cognitive-complexity.IgnoreMacros, value: 1 }
