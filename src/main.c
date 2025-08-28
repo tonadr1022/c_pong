@@ -40,6 +40,7 @@ typedef enum MsgType {
 
 typedef struct MsgPlayerPos {
   float pos;
+  float paddle_vert_velocity;
   int player;
 } MsgPlayerPos;
 
@@ -108,11 +109,17 @@ int get_other_player_fd(Game* g) {
 
 void game_start_new_game(Game* g) {
   for (int i = 0; i < 2; i++) {
-    PlayerData* p = g->players + i;
-    p->pos = world_dims.x / 2.f;
-    p->score = 0;
+    msg_buf_push(&g->net_info.msg_buf, MSG_SCORE_UPDATE,
+                 &((MsgScoreUpdate){.score = 0, .player = i}), sizeof(MsgPlayerPos));
+    msg_buf_push(
+        &g->net_info.msg_buf, MSG_PLAYER_POS,
+        &((MsgPlayerPos){.pos = world_dims.x / 2.f, .paddle_vert_velocity = 0, .player = i}),
+        sizeof(MsgPlayerPos));
   }
   game_reset_ball(g);
+  msg_buf_push(&g->net_info.msg_buf, MSG_BALL_POS_UPDATE,
+               &((MsgBall){.pos = g->ball_pos, .velocity = g->ball_velocity}),
+               sizeof(MsgPlayerPos));
 }
 
 void game_init(Game* g) {
@@ -234,12 +241,6 @@ void on_host_online_game(Game* g, int port) {
 
 void game_update_menu([[maybe_unused]] Game* g) {}
 
-bool check_collision_rects(Rectangle r1, Rectangle r2) {
-  bool horiz_overlap = fmaxf(r1.x, r2.x) > fminf(r1.x + r1.width, r2.x + r2.width);
-  bool vert_overlap = fmaxf(r1.y + r1.height, r2.y + r2.height) < fminf(r1.y, r2.y);
-  return horiz_overlap && vert_overlap;
-}
-
 Rectangle get_p2_paddle_rect(Game* g) {
   Vector2 paddle_half_dims = Vector2Scale(paddle_dims, 0.5f);
   return (Rectangle){world_dims.x - paddle_dims.x, g->players[1].pos - paddle_half_dims.y,
@@ -267,6 +268,7 @@ void game_on_msg(Game* g, Frame* fr) {
     case MSG_PLAYER_POS: {
       MsgPlayerPos* u = (MsgPlayerPos*)fr->payload;
       g->players[u->player].pos = u->pos;
+      g->players[u->player].paddle_vert_velocity = u->paddle_vert_velocity;
       break;
     }
     case MSG_SCORE_UPDATE: {
@@ -343,20 +345,21 @@ void game_update_pong_process_input(Game* g) {
   {  // pos
     float dt = GetFrameTime();
     float speed = 300;
-    for (int i = 0; i < 2; i++) {
-      g->players[i].paddle_vert_velocity = 0;
-    }
-    float* vert_delta = &g->players[player].paddle_vert_velocity;
+    float* vy = &g->players[player].paddle_vert_velocity;
+    *vy = 0.f;
     if (IsKeyDown(KEY_J)) {
-      *vert_delta = speed * dt;
+      *vy += speed;
     }
     if (IsKeyDown(KEY_K)) {
-      *vert_delta = -speed * dt;
+      *vy += -speed;
     }
-    g->players[player].pos += *vert_delta;
-    if (fabsf(*vert_delta) > 0.f) {
-      MsgPlayerPos p = {.pos = g->players[player].pos, .player = player};
-      msg_buf_push(&g->net_info.msg_buf, MSG_PLAYER_POS, &p, sizeof(p));
+    g->players[player].pos += (*vy) * dt;
+    if (fabsf(*vy) > 0.f) {
+      msg_buf_push(&g->net_info.msg_buf, MSG_PLAYER_POS,
+                   &(MsgPlayerPos){.pos = g->players[player].pos,
+                                   .paddle_vert_velocity = g->players[player].paddle_vert_velocity,
+                                   .player = player},
+                   sizeof(MsgPlayerPos));
     }
   }
 
@@ -377,46 +380,69 @@ void game_update_pong_game_online(Game* g) {
     bool score_happened = false;
     if (g->ball_pos.x - ball_radius <= 0) {
       score_happened = true;
-      g->players[0].score++;
       msg_buf_push(&g->net_info.msg_buf, MSG_SCORE_UPDATE,
-                   &(MsgScoreUpdate){.score = g->players[0].score, .player = 0},
+                   &(MsgScoreUpdate){.score = g->players[0].score + 1, .player = 0},
                    sizeof(MsgScoreUpdate));
     }
     if (g->ball_pos.x + ball_radius >= world_dims.x) {
       score_happened = true;
-      g->players[1].score++;
       msg_buf_push(&g->net_info.msg_buf, MSG_SCORE_UPDATE,
-                   &(MsgScoreUpdate){.score = g->players[1].score, .player = 1},
+                   &(MsgScoreUpdate){.score = g->players[1].score + 1, .player = 1},
                    sizeof(MsgScoreUpdate));
     }
     if (score_happened) {
       game_reset_ball(g);
     }
 
-    Rectangle circle_rect = {.x = g->ball_pos.x - ball_radius,
-                             .y = g->ball_pos.y - ball_radius,
-                             .width = ball_radius * 2.f,
-                             .height = ball_radius * 2.f};
+    Rectangle circle_rect = {g->ball_pos.x - ball_radius, g->ball_pos.y - ball_radius,
+                             ball_radius * 2.f, ball_radius * 2.f};
     Rectangle p1_rect = get_p1_paddle_rect(g);
     Rectangle p2_rect = get_p2_paddle_rect(g);
-    float vert_ball_move_mult = 400.f;
+    float max_deflect = 350.f;
     float ball_speed_x_collision_mult = ball_base_speed_x / 10.f;
+    float paddle_spin_scale = 0.f;
     if (CheckCollisionRecs(p1_rect, circle_rect)) {
-      g->collision_count++;
       g->ball_velocity.x =
           ball_base_speed_x + (float)g->collision_count * ball_speed_x_collision_mult;
-      g->ball_pos.x = fmaxf(paddle_dims.x, g->ball_pos.x) + 0.1f;
-      g->ball_velocity.y = g->players[0].paddle_vert_velocity * vert_ball_move_mult;
-    }
-    if (CheckCollisionRecs(p2_rect, circle_rect)) {
+
+      g->ball_pos.x = p1_rect.x + p1_rect.width + ball_radius;
+
+      float p1_center = p1_rect.y + p1_rect.height * 0.5f;
+      float rel = (g->ball_pos.y - p1_center) / (paddle_dims.y * 0.5f);
+      rel = fmaxf(fminf(rel, 1.f), -1.f);
+
+      g->ball_velocity.y =
+          rel * max_deflect + g->players[0].paddle_vert_velocity * paddle_spin_scale;
       g->collision_count++;
+    }
+
+    if (CheckCollisionRecs(p2_rect, circle_rect)) {
       g->ball_velocity.x =
           -(ball_base_speed_x + (float)g->collision_count * ball_speed_x_collision_mult);
-      g->ball_pos.x = fminf(g->ball_pos.x, world_dims.x - paddle_dims.x) - 0.1f;
-      g->ball_velocity.y = g->players[1].paddle_vert_velocity * vert_ball_move_mult;
+
+      // put ball just to the left of the paddle face
+      g->ball_pos.x = p2_rect.x - ball_radius;
+
+      float p2_center = p2_rect.y + p2_rect.height * 0.5f;
+      float rel = (g->ball_pos.y - p2_center) / (paddle_dims.y * 0.5f);
+      rel = fmaxf(fminf(rel, 1.f), -1.f);
+
+      g->ball_velocity.y =
+          rel * max_deflect + g->players[1].paddle_vert_velocity * paddle_spin_scale;
+      g->collision_count++;
     }
 
     g->ball_pos = Vector2Add(g->ball_pos, Vector2Scale(g->ball_velocity, dt));
+
+    // foor/ceiling
+    if (g->ball_pos.y - ball_radius <= 0.f) {
+      g->ball_pos.y = ball_radius;
+      g->ball_velocity.y *= -1.f;
+    }
+    if (g->ball_pos.y + ball_radius >= world_dims.y) {
+      g->ball_pos.y = world_dims.y - ball_radius;
+      g->ball_velocity.y *= -1.f;
+    }
 
     msg_buf_push(&g->net_info.msg_buf, MSG_BALL_POS_UPDATE,
                  &(MsgBall){.pos = g->ball_pos, .velocity = g->ball_velocity}, sizeof(MsgBall));
@@ -428,60 +454,11 @@ void game_update_pong_game(Game* g) {
     game_update_pong_game_online(g);
     return;
   }
-  if (IsKeyPressed(KEY_P)) {
-    g->game_state = STATE_PAUSE_MENU;
-    return;
-  }
-
-  float p1_vert_delta = 0.f, p2_vert_delta = 0.f;
-  float dt = GetFrameTime();
-  float speed = 300;
-  if (IsKeyDown(KEY_J)) {
-    p1_vert_delta = speed * dt;
-  }
-  if (IsKeyDown(KEY_K)) {
-    p1_vert_delta = -speed * dt;
-  }
-  if (IsKeyDown(KEY_N)) {
-    p2_vert_delta = speed * dt;
-  }
-  if (IsKeyDown(KEY_M)) {
-    p2_vert_delta = -speed * dt;
-  }
-  g->players[0].pos += p1_vert_delta;
-  g->players[1].pos += p2_vert_delta;
-
-  Rectangle circle_rect = {.x = g->ball_pos.x - ball_radius,
-                           .y = g->ball_pos.y - ball_radius,
-                           .width = ball_radius * 2.f,
-                           .height = ball_radius * 2.f};
-  Rectangle p1_rect = get_p1_paddle_rect(g);
-  Rectangle p2_rect = get_p2_paddle_rect(g);
-  float vert_ball_move_mult = 400.f;
-  float ball_speed_x_collision_mult = ball_base_speed_x / 10.f;
-  if (CheckCollisionRecs(p1_rect, circle_rect)) {
-    g->collision_count++;
-    g->ball_velocity.x =
-        ball_base_speed_x + (float)g->collision_count * ball_speed_x_collision_mult;
-    g->ball_pos.x = fmaxf(paddle_dims.x, g->ball_pos.x) + 0.1f;
-    g->ball_velocity.y = p1_vert_delta * vert_ball_move_mult;
-  }
-  if (CheckCollisionRecs(p2_rect, circle_rect)) {
-    g->collision_count++;
-    g->ball_velocity.x =
-        -(ball_base_speed_x + (float)g->collision_count * ball_speed_x_collision_mult);
-    g->ball_pos.x = fminf(g->ball_pos.x, world_dims.x - paddle_dims.x) - 0.1f;
-    g->ball_velocity.y = p2_vert_delta * vert_ball_move_mult;
-  }
-
-  g->ball_pos = Vector2Add(g->ball_pos, Vector2Scale(g->ball_velocity, dt));
 }
 
 void game_update_pause_menu(Game* g) {
   if (g->curr_pause_player == get_curr_player(g) &&
       (IsKeyPressed(KEY_P) || IsKeyPressed(KEY_BACKSLASH))) {
-    g->game_state = STATE_PLAY;
-    g->curr_pause_player = INT_MAX;
     msg_buf_push(&g->net_info.msg_buf, MSG_STATE_UPDATE,
                  &(MsgStateUpdate){.state = g->game_state, .player = get_curr_player(g)},
                  sizeof(MsgStateUpdate));
@@ -500,16 +477,19 @@ void game_update(Game* g) {
 
   update_fns[g->game_state](g);
 
+  game_process_msgs(g, g->net_info.msg_buf.data, g->net_info.msg_buf.size);
   msg_buf_send_and_clear(&g->net_info.msg_buf, get_other_player_fd(g));
 }
 
 void game_draw_pong(Game* g) {
   BeginMode2D(g->camera);
   Color paddle_color = GOLD;
-  char buf[50];
+  char buf[200];
   snprintf(buf, sizeof(buf), "P1: %i\nP2: %i", g->players[0].score, g->players[1].score);
   DrawText(buf, 0, 0, 20, ORANGE);
-  snprintf(buf, sizeof(buf), "vel x: %f, y: %f", g->ball_velocity.x, g->ball_velocity.y);
+  snprintf(buf, sizeof(buf), "vel x: %f, y: %f\ncollision_count: %i\nvy0: %f\tvy1: %f",
+           g->ball_velocity.x, g->ball_velocity.y, g->collision_count,
+           g->players[0].paddle_vert_velocity, g->players[1].paddle_vert_velocity);
   DrawText(buf, 0, 40, 20, ORANGE);
   Rectangle p1_rect = get_p1_paddle_rect(g);
   Rectangle p2_rect = get_p2_paddle_rect(g);
